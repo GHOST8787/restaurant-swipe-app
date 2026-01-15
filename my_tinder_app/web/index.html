@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <title>my_tinder_app</title>
+
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+  <style>
+    /* 強制所有 icon 使用 Material Icons 字體 */
+    .material-icons {
+      font-family: 'Material Icons' !important;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    window.addEventListener('load', function(ev) {
+      _flutter.loader.load({
+        onEntrypointLoaded: async function(engineInitializer) {
+          const appRunner = await engineInitializer.initializeEngine({
+            // 雙保險 2: 這裡寫死 renderer，你就不用在終端機打那長串指令了
+            renderer: "html", 
+          });
+          await appRunner.runApp();
+        }
+      });
+    });
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
