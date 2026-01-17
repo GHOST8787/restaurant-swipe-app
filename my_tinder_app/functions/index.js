@@ -11,6 +11,18 @@ const db = getFirestore();
 // API Key (請確認此 Key 在 Google Cloud Console 有開啟 Places API 權限)
 const GOOGLE_API_KEY = "AIzaSyBLBlabLgVT8jx-G-4tQ3fGzKvTELmoP1c";
 
+// ★★★ 0. 定義統一白名單 (根據官方文件 Table 1 & 2) ★★★
+// 只有這 7 個字是我們承認的「餐廳相關」類型，其他的都會被過濾掉
+const UNIFIED_WHITELIST = [
+  'restaurant',
+  'cafe',
+  'bakery',
+  'bar',
+  'meal_delivery',
+  'meal_takeaway',
+  'food'
+];
+
 // --- 距離計算 ---
 function calculateDistance(lat1, lon1, lat2, lon2) {
   if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
@@ -53,20 +65,26 @@ exports.getRestaurants = onCall(async (request) => {
       axios.get(transitUrl)
     ]);
 
-    const results = resResponse.data.results || [];
+    const rawResults = resResponse.data.results || [];
     const transitResults = transitResponse.data.results || [];
-
-    // 找最近的一個捷運站
     const bestTransit = transitResults.length > 0 ? transitResults[0] : null;
 
-    return results.map(place => {
+    // ★★★ 白名單過濾邏輯 ★★★
+    const processedResults = rawResults.map(place => {
+      // (選擇性) 排除暫時關閉或永久停業的地點
+      if (place.business_status !== 'OPERATIONAL') return null;
+
       const placeLat = place.geometry?.location?.lat;
       const placeLng = place.geometry?.location?.lng;
+      const rawTypes = place.types || [];
 
-      // 過濾雜亂類別
-      const genericTypes = ['point_of_interest', 'establishment', 'food', 'restaurant', 'store'];
-      const specificTypes = (place.types || []).filter(t => !genericTypes.includes(t));
-      const displayType = specificTypes.length > 0 ? specificTypes[0] : 'restaurant';
+      // 過濾邏輯：只留下白名單內的字
+      // 例如：place 有 ['restaurant', 'point_of_interest'] -> 留下來 ['restaurant']
+      const validTypes = rawTypes.filter(t => UNIFIED_WHITELIST.includes(t));
+
+      // 檢查：如果過濾完是空的 (代表這家店完全不在我們的餐飲白名單內)，直接丟棄
+      // 例如：牙醫診所只會有 ['dentist', 'health']，過濾完會變成 []，這裡就會 return null
+      if (validTypes.length === 0) return null;
 
       // 計算距離
       let dist = calculateDistance(lat, lng, placeLat, placeLng);
@@ -88,15 +106,20 @@ exports.getRestaurants = onCall(async (request) => {
       return {
         place_id: place.place_id,
         name: place.name,
-        address: place.vicinity || place.formatted_address || "地址不詳", // ★ 新增地址欄位
+        address: place.vicinity || place.formatted_address || "地址不詳",
         rating: place.rating || 0,
-        types: displayType, 
+        rating_count: place.user_ratings_total || 0,
+        types: validTypes, // ★ 這裡現在回傳的是乾淨的陣列，給前端自己判斷
         price_level: place.price_level || 0,
         distance: dist,
         station_info: stationInfo,
         photo_url: getPhotoUrl(photoRef), 
       };
-    });
+    })
+    .filter(item => item !== null); // ★ 移除所有 null (不合格) 的資料
+
+    return processedResults;
+
   } catch (error) {
     console.error("API Error:", error);
     throw new admin.functions.https.HttpsError('internal', '無法取得資料', error.message);
@@ -105,8 +128,6 @@ exports.getRestaurants = onCall(async (request) => {
 
 // --- 新增收藏 ---
 exports.addFavorite = onCall(async (request) => {
-  // 移除強制登入檢查，允許匿名使用者收藏 (或者前端控制)
-  // 但為了安全，最好還是檢查 request.auth，只是前端我們會讓訪客也能拿到 auth
   if (!request.auth) throw new admin.functions.https.HttpsError('unauthenticated', '請先登入');
   
   const uid = request.auth.uid;

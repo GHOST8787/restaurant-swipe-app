@@ -7,8 +7,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'dart:async';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,44 +17,35 @@ void main() async {
   runApp(const MyApp());
 }
 
-// --- 輔助函式：處理圖片網址 ---
 String _getDisplayImageUrl(String? url) {
   if (url == null || url.isEmpty) return "";
-  if (kIsWeb) {
-    // 網頁版需要 CORS Proxy
+  if (kIsWeb)
     return "https://api.allorigins.win/raw?url=${Uri.encodeComponent(url)}";
-  }
   return url;
 }
 
-// ==========================================
-// 1. App 入口 (MyApp)
-// ==========================================
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: '今天吃什麼？',
       theme: ThemeData(
-        // 使用更亮的橘色作為種子顏色
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.orange,
           primary: Colors.orange,
           secondary: Colors.deepOrangeAccent,
         ),
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFFFF7F0), // 淡奶油色背景
-        // ★★★ 修正點：這裡必須使用 CardThemeData ★★★
+        scaffoldBackgroundColor: const Color(0xFFFFF7F0),
         cardTheme: CardThemeData(
-          elevation: 8, // 增加陰影讓卡片更立體
+          elevation: 8,
           shadowColor: Colors.black.withOpacity(0.2),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(28), // 更圓潤的邊角
+            borderRadius: BorderRadius.circular(28),
           ),
-          clipBehavior: Clip.antiAlias, // 確保圖片不會超出圓角
+          clipBehavior: Clip.antiAlias,
         ),
       ),
       home: const MyHomePage(title: '🔥 今天想吃什麼？'),
@@ -61,13 +53,9 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ==========================================
-// 2. 主畫面 (MyHomePage)
-// ==========================================
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
   final String title;
-
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
@@ -83,20 +71,17 @@ class _MyHomePageState extends State<MyHomePage> {
   final CardSwiperController controller = CardSwiperController();
   String _selectedFilter = 'all';
 
-  // 篩選選項
   final Map<String, String> categoryOptions = {
     'all': '全部餐廳',
     'restaurant': '精選餐廳',
     'cafe': '咖啡廳',
+    'bakery': '烘焙坊',
     'bar': '酒吧',
-    'fast_food': '速食店',
-    'chinese': '中式餐廳',
-    'japanese': '日式餐廳',
-    'italian': '義式餐廳',
-    'thai': '泰式餐廳',
+    'meal_takeaway': '外帶美食',
+    'meal_delivery': '外送美食',
+    'food': '一般美食',
   };
 
-  // --- 新增：顯示設定選單 (Bottom Sheet) ---
   void _showSettingsPanel() {
     showModalBottomSheet(
       context: context,
@@ -165,22 +150,16 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
               ] else ...[
                 // =================================
-                // 狀態 B：未登入 (直接顯示登入按鈕)
+                // 狀態 B：未登入 (補回消失的按鈕！)
                 // =================================
-                const Text(
-                  "尚未登入",
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 20),
-
-                // 1. Google 登入按鈕
+                // 1. Google 登入按鈕 (如果要用的話)
                 SizedBox(
-                  width: double.infinity, // 讓按鈕撐滿寬度
+                  width: double.infinity,
                   height: 50,
                   child: ElevatedButton.icon(
                     onPressed: () {
-                      Navigator.pop(context); // ★ 點擊後先關閉選單
-                      _handleGoogleSignIn(); // 再執行登入
+                      Navigator.pop(context);
+                      _handleGoogleSignIn();
                     },
                     icon: const Icon(Icons.login),
                     label: const Text("Google 帳號登入"),
@@ -191,16 +170,15 @@ class _MyHomePageState extends State<MyHomePage> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
 
-                // 2. 訪客登入按鈕
+                // 2. ★★★ 訪客登入按鈕 (補在這裡！) ★★★
                 SizedBox(
                   width: double.infinity,
                   height: 50,
                   child: OutlinedButton(
                     onPressed: () {
-                      Navigator.pop(context); // ★ 點擊後先關閉選單
+                      Navigator.pop(context); // 點擊後先關閉選單
                       _handleGuestSignIn(); // 再執行登入
                     },
                     style: OutlinedButton.styleFrom(
@@ -220,22 +198,59 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
+  Future<void> _handleGoogleSignIn() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      // 1. 建立 GoogleSignIn 實體
+      final GoogleSignIn googleSignIn = GoogleSignIn.instance;
+
+      // 2. 觸發登入流程 (會跳出視窗)
+      final GoogleSignInAccount googleUser = await googleSignIn.authenticate();
+
+      // 3. 取得驗證資料 (Access Token & ID Token)
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      // 4. 建立 Firebase 憑證
+      final OAuthCredential credential = GoogleAuthProvider.credential(
+        accessToken: null,
+        idToken: googleAuth.idToken,
+      );
+
+      // 5. 正式登入 Firebase
+      final UserCredential userCredential = await FirebaseAuth.instance
+          .signInWithCredential(credential);
+
+      // 6. 更新狀態
+      setState(() {
+        currentUser = userCredential.user;
+        // 登入成功後，立刻重新抓取一次資料 (因為可能有專屬推薦或權限)
+        _fetchRealRestaurants();
+      });
+    } catch (e) {
+      debugPrint("Google 登入失敗：$e");
+      setState(() {
+        isLoading = false;
+        errorMessage = "登入失敗，請稍後再試";
+      });
+    }
+  }
+
   void _startLocationUpdates() {
-    // 設定：移動超過 500 公尺才更新一次 (避免一直重新整理浪費錢)
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
       distanceFilter: 500,
     );
-
     _positionStreamSubscription =
         Geolocator.getPositionStream(locationSettings: locationSettings).listen(
           (Position? position) {
             if (position != null) {
               debugPrint("偵測到位置移動，重新抓取餐廳...");
-              // 只有當已經登入時，才自動重抓
-              if (currentUser != null) {
-                _fetchRealRestaurants();
-              }
+              if (currentUser != null) _fetchRealRestaurants();
             }
           },
         );
@@ -245,28 +260,21 @@ class _MyHomePageState extends State<MyHomePage> {
   void initState() {
     super.initState();
     _checkLoginStatus();
-    // ★★★ 啟動監聽 ★★★
     _startLocationUpdates();
   }
 
   @override
   void dispose() {
-    // ★★★ 記得關閉監聽，避免記憶體洩漏 ★★★
     _positionStreamSubscription?.cancel();
     super.dispose();
   }
 
-  Future<void> _initApp() async {
-    await _checkLoginStatus();
-  }
+  Future<void> _initApp() async => await _checkLoginStatus();
 
   Future<void> _checkLoginStatus() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // 如果已經登入，直接開始抓資料
-      setState(() {
-        currentUser = user;
-      });
+      setState(() => currentUser = user);
       _fetchRealRestaurants();
     }
   }
@@ -278,9 +286,7 @@ class _MyHomePageState extends State<MyHomePage> {
     });
     try {
       final userCredential = await FirebaseAuth.instance.signInAnonymously();
-      setState(() {
-        currentUser = userCredential.user;
-      });
+      setState(() => currentUser = userCredential.user);
       await _fetchRealRestaurants();
     } catch (e) {
       debugPrint("訪客登入失敗：$e");
@@ -291,66 +297,8 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  Future<void> _handleGoogleSignIn() async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
-
-    try {
-      // 1. 建立 GoogleSignIn 實體
-      final GoogleSignIn googleSignIn = GoogleSignIn();
-
-      // 2. 觸發 Google 登入流程
-      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
-
-      if (googleUser == null) {
-        // 使用者取消登入
-        setState(() {
-          isLoading = false;
-          errorMessage = "取消登入";
-        });
-        return;
-      }
-
-      // 3. 取得驗證資料 (關鍵修改點)
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-
-      // 4. 建立 Firebase 憑證
-      // ★ 注意：新版 google_sign_in 移除了 accessToken，這裡傳 null 即可
-      // Firebase 驗證主要依賴 idToken
-      final credential = GoogleAuthProvider.credential(
-        accessToken: null,
-        idToken: googleAuth.idToken,
-      );
-
-      // 5. 登入 Firebase
-      final userCredential = await FirebaseAuth.instance.signInWithCredential(
-        credential,
-      );
-
-      // 6. 登入成功，更新狀態
-      setState(() {
-        currentUser = userCredential.user;
-      });
-
-      debugPrint("登入成功：${currentUser?.displayName}");
-      await _fetchRealRestaurants();
-    } catch (e) {
-      debugPrint("登入失敗：$e");
-      setState(() {
-        isLoading = false;
-        errorMessage = "登入失敗：$e";
-      });
-    }
-  }
-
-  // 3. 登出
   Future<void> _handleSignOut() async {
     await FirebaseAuth.instance.signOut();
-    // 確保這裡是用實體呼叫 signOut，或者直接用 GoogleSignIn().signOut()
-    await GoogleSignIn().signOut();
     setState(() {
       currentUser = null;
       restaurants = [];
@@ -363,26 +311,20 @@ class _MyHomePageState extends State<MyHomePage> {
       isLoading = true;
       errorMessage = null;
     });
-
     try {
-      // 檢查定位權限 (解決崩潰問題)
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
+        if (permission == LocationPermission.denied)
           throw Exception("需要定位權限才能尋找附近餐廳");
-        }
       }
-      if (permission == LocationPermission.deniedForever) {
+      if (permission == LocationPermission.deniedForever)
         throw Exception("定位權限被永久拒絕，請至設定開啟");
-      }
 
       Position pos = await Geolocator.getCurrentPosition();
-
       final result = await FirebaseFunctions.instance
           .httpsCallable('getRestaurants')
           .call({"lat": pos.latitude, "lng": pos.longitude});
-
       final List<dynamic> fetchedData = result.data;
 
       if (mounted) {
@@ -395,6 +337,7 @@ class _MyHomePageState extends State<MyHomePage> {
               "address": item['address']?.toString() ?? '地址載入中...',
               "dist": "${item['distance'] ?? 0}",
               "rate": "${item['rating'] ?? 0.0}",
+              "rating_count": "${item['rating_count'] ?? 0}",
               "price_level": "${item['price_level'] ?? 0}",
               "types": item['types']?.toString() ?? 'restaurant',
               "photo_url": item['photo_url']?.toString() ?? "",
@@ -408,12 +351,11 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     } catch (e) {
       debugPrint("抓取失敗：$e");
-      if (mounted) {
+      if (mounted)
         setState(() {
           isLoading = false;
           errorMessage = "發生錯誤，請檢查網路或定位權限";
         });
-      }
     }
   }
 
@@ -421,12 +363,10 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_selectedFilter == 'all') {
       _displayRestaurants = List.from(_allRestaurants);
     } else {
-      _displayRestaurants = _allRestaurants.where((res) {
-        // 比對 types (API 可能回傳 restaurant, cafe 等)
-        return res['types'] == _selectedFilter;
-      }).toList();
+      _displayRestaurants = _allRestaurants
+          .where((res) => res['types'] == _selectedFilter)
+          .toList();
     }
-    // Update restaurants to display filtered results
     restaurants = List.from(_displayRestaurants);
   }
 
@@ -439,12 +379,18 @@ class _MyHomePageState extends State<MyHomePage> {
         borderRadius: BorderRadius.circular(30),
         border: Border.all(color: Colors.orange.shade100),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2)),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
         ],
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          value: categoryOptions.containsKey(_selectedFilter) ? _selectedFilter : 'all',
+          value: categoryOptions.containsKey(_selectedFilter)
+              ? _selectedFilter
+              : 'all',
           icon: const Icon(Icons.filter_list_rounded, color: Colors.orange),
           isExpanded: true,
           items: categoryOptions.entries.map((entry) {
@@ -453,21 +399,22 @@ class _MyHomePageState extends State<MyHomePage> {
               child: Text(
                 entry.value,
                 style: TextStyle(
-                  color: _selectedFilter == entry.key ? Colors.orange.shade800 : Colors.black87,
-                  fontWeight: _selectedFilter == entry.key ? FontWeight.bold : FontWeight.normal,
+                  color: _selectedFilter == entry.key
+                      ? Colors.orange.shade800
+                      : Colors.black87,
+                  fontWeight: _selectedFilter == entry.key
+                      ? FontWeight.bold
+                      : FontWeight.normal,
                 ),
               ),
             );
           }).toList(),
           onChanged: (String? newValue) {
-            if (newValue != null) {
+            if (newValue != null)
               setState(() {
                 _selectedFilter = newValue;
                 _applyFilter();
-                // 切換篩選時，如果不想讓卡片索引跑掉，通常建議直接更新 UI 即可
-                // CardSwiper 會自動偵測 list 長度變化
               });
-            }
           },
         ),
       ),
@@ -475,13 +422,10 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget _buildBody(double cardWidth, double cardHeight) {
-    if (isLoading) {
+    if (isLoading)
       return const Center(
         child: CircularProgressIndicator(color: Colors.orange),
       );
-    }
-
-    // ★★★ 1. 這裡才是放登入介面的正確位置 ★★★
     if (currentUser == null) {
       return Center(
         child: Column(
@@ -510,22 +454,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   style: const TextStyle(color: Colors.red),
                 ),
               ),
-            // Google 按鈕
-            SizedBox(
-              width: 250,
-              height: 50,
-              child: ElevatedButton.icon(
-                onPressed: _handleGoogleSignIn,
-                icon: const Icon(Icons.login),
-                label: const Text("Google 帳號登入"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black87,
-                ),
-              ),
-            ),
             const SizedBox(height: 16),
-            // 訪客按鈕
             SizedBox(
               width: 250,
               height: 50,
@@ -544,11 +473,6 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
       );
     }
-
-    if (restaurants.isEmpty) {
-      return const Center(child: Text("附近找不到符合的餐廳 T_T"));
-    }
-
     return Center(
       child: SizedBox(
         width: cardWidth,
@@ -561,11 +485,10 @@ class _MyHomePageState extends State<MyHomePage> {
               : 3,
           backCardOffset: const Offset(0, 40),
           padding: EdgeInsets.zero,
-          isLoop: false, // ★★★ 2. 這裡加入不輪迴設定 ★★★
+          isLoop: false,
           onSwipe: (prev, curr, dir) {
-            if (dir == CardSwiperDirection.right) {
+            if (dir == CardSwiperDirection.right)
               _saveToCloud(restaurants[prev]);
-            }
             return true;
           },
           cardBuilder: (context, index, _, __) =>
@@ -598,13 +521,10 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // 限制在大螢幕上的最大寬度
     double screenWidth = MediaQuery.of(context).size.width;
     double cardWidth = screenWidth > 600 ? 400 : screenWidth * 0.9;
     double cardHeight = MediaQuery.of(context).size.height * 0.7;
-
     return Scaffold(
-      // 改用白色 AppBar 看起來更乾淨
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -614,18 +534,24 @@ class _MyHomePageState extends State<MyHomePage> {
             color: Colors.grey,
             size: 26,
           ),
-          onPressed: _showSettingsPanel, // 綁定剛剛寫好的函式
+          onPressed: _showSettingsPanel,
         ),
         title: Text(
-          widget.title, 
+          widget.title,
           style: const TextStyle(
-            color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 22,
+            color: Colors.black87,
+            fontWeight: FontWeight.bold,
+            fontSize: 22,
           ),
         ),
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.bookmark_rounded, color: Colors.orange, size: 28),
+            icon: const Icon(
+              Icons.bookmark_rounded,
+              color: Colors.orange,
+              size: 28,
+            ),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const FavoritesPage()),
@@ -650,17 +576,18 @@ class _MyHomePageState extends State<MyHomePage> {
                 : Center(
                     child: SizedBox(
                       width: cardWidth,
-                      height: cardHeight, // 固定高度避免跑版
+                      height: cardHeight,
                       child: CardSwiper(
                         controller: controller,
                         cardsCount: restaurants.length,
-                        numberOfCardsDisplayed: 3, // 顯示堆疊效果
-                        backCardOffset: const Offset(0, 40), // 堆疊位移
+                        numberOfCardsDisplayed: (restaurants.length >= 3)
+                            ? 3
+                            : restaurants.length,
+                        backCardOffset: const Offset(0, 40),
                         padding: EdgeInsets.zero,
                         onSwipe: (prev, curr, dir) {
-                          if (dir == CardSwiperDirection.right) {
+                          if (dir == CardSwiperDirection.right)
                             _saveToCloud(restaurants[prev]);
-                          }
                           return true;
                         },
                         cardBuilder: (context, index, _, __) =>
@@ -669,16 +596,26 @@ class _MyHomePageState extends State<MyHomePage> {
                     ),
                   ),
           ),
-
-          // 底部按鈕區 (加大按鈕)
-          if (!isLoading && currentUser != null && _displayRestaurants.isNotEmpty)
+          if (!isLoading &&
+              currentUser != null &&
+              _displayRestaurants.isNotEmpty)
             Container(
               padding: const EdgeInsets.symmetric(vertical: 20),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _actionButton(Icons.close_rounded, Colors.grey.shade400, Colors.white, () => controller.swipe(CardSwiperDirection.left)),
-                  _actionButton(Icons.favorite_rounded, Colors.pinkAccent, Colors.white, () => controller.swipe(CardSwiperDirection.right)),
+                  _actionButton(
+                    Icons.close_rounded,
+                    Colors.grey.shade400,
+                    Colors.white,
+                    () => controller.swipe(CardSwiperDirection.left),
+                  ),
+                  _actionButton(
+                    Icons.favorite_rounded,
+                    Colors.pinkAccent,
+                    Colors.white,
+                    () => controller.swipe(CardSwiperDirection.right),
+                  ),
                 ],
               ),
             ),
@@ -708,7 +645,7 @@ class _MyHomePageState extends State<MyHomePage> {
         heroTag: null,
         onPressed: onPressed,
         backgroundColor: bgColor,
-        elevation: 0, // 用 Container 的陰影取代預設陰影
+        elevation: 0,
         shape: const CircleBorder(),
         child: Icon(icon, color: iconColor, size: 40),
       ),
@@ -716,40 +653,34 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 }
 
-// ==========================================
-// 3. 優化後的餐廳卡片 (_RestaurantCard)
-// ==========================================
 class _RestaurantCard extends StatelessWidget {
   final Map<String, dynamic> data;
   const _RestaurantCard({required this.data});
-
   @override
   Widget build(BuildContext context) {
     final String imageUrl = _getDisplayImageUrl(data['photo_url']);
-
-    // 翻譯類別
     final Map<String, String> typeTrans = {
-      'teppanyaki_restaurant': '鐵板燒',
-      'steak_house': '牛排館',
-      'japanese_restaurant': '日式料理',
-      'sushi_restaurant': '壽司',
-      'hot_pot_restaurant': '火鍋',
+      'restaurant': '精選餐廳',
       'cafe': '咖啡廳',
       'bakery': '烘焙甜點',
       'bar': '酒吧',
-      'restaurant': '精選餐廳',
+      'meal_takeaway': '外帶服務',
+      'meal_delivery': '外送服務',
+      'food': '美食',
     };
-
-    String rawType = data['types'] ?? 'restaurant';
-    String category =
-        typeTrans[rawType] ?? rawType.replaceAll('_', ' ').toUpperCase();
+    List<String> types = [];
+    if (data['types'] is List) {
+      types = List<String>.from(data['types']);
+    } else {
+      types = [data['types']?.toString() ?? 'restaurant'];
+    }
+    String rawType = types.isNotEmpty ? types[0] : 'restaurant';
+    String category = typeTrans[rawType] ?? '餐廳';
 
     return Card(
-      // CardTheme 已經設定在 main 的 theme 裡了，這裡不需要重複設定
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 上半部：圖片區 (佔 60%)
           Expanded(
             flex: 6,
             child: Stack(
@@ -760,14 +691,12 @@ class _RestaurantCard extends StatelessWidget {
                         imageUrl,
                         fit: BoxFit.cover,
                         errorBuilder: (_, __, ___) => _buildPlaceholder(),
-                        loadingBuilder: (ctx, child, loadingProgress) {
-                          if (loadingProgress == null) return child;
-                          return _buildPlaceholder();
-                        },
+                        loadingBuilder: (ctx, child, loadingProgress) =>
+                            loadingProgress == null
+                            ? child
+                            : _buildPlaceholder(),
                       )
                     : _buildPlaceholder(),
-
-                // 距離標籤 (左上角，改用半透明黑底)
                 Positioned(
                   top: 15,
                   left: 15,
@@ -803,8 +732,6 @@ class _RestaurantCard extends StatelessWidget {
               ],
             ),
           ),
-
-          // 下半部：資訊區 (佔 40%)
           Expanded(
             flex: 4,
             child: Container(
@@ -814,11 +741,9 @@ class _RestaurantCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // 標題與價格
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // ★★★ 修正點：允許標題兩行顯示，防止被截斷 ★★★
                       Text(
                         data['name'],
                         style: const TextStyle(
@@ -832,7 +757,6 @@ class _RestaurantCard extends StatelessWidget {
                       const SizedBox(height: 12),
                       Row(
                         children: [
-                          // 價格標籤
                           Text(
                             "\$" * (int.tryParse(data['price_level']) ?? 1),
                             style: const TextStyle(
@@ -842,7 +766,6 @@ class _RestaurantCard extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          // 類別標籤 (改用 Chip 樣式)
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 10,
@@ -868,11 +791,7 @@ class _RestaurantCard extends StatelessWidget {
                       ),
                     ],
                   ),
-
-                  // 分隔線
                   Divider(color: Colors.grey.shade200, thickness: 1),
-
-                  // 底部評分與捷運
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -923,7 +842,6 @@ class _RestaurantCard extends StatelessWidget {
     );
   }
 
-  // 優化佔位符：使用淺灰色背景 + 柔和圖示
   Widget _buildPlaceholder() {
     return Container(
       color: Colors.grey.shade100,
@@ -948,22 +866,33 @@ class _RestaurantCard extends StatelessWidget {
   }
 }
 
-// ==========================================
-// 4. 收藏頁面與詳情頁 (保持基本功能，僅微調樣式)
-// ==========================================
-class FavoritesPage extends StatelessWidget {
+class FavoritesPage extends StatefulWidget {
   const FavoritesPage({super.key});
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  String _selectedFilter = 'all';
+  final Map<String, String> categoryOptions = {
+    'all': '全部餐廳',
+    'restaurant': '精選餐廳',
+    'cafe': '咖啡廳',
+    'bakery': '烘焙坊',
+    'bar': '酒吧',
+    'meal_takeaway': '外帶美食',
+    'meal_delivery': '外送美食',
+    'food': '一般美食',
+  };
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    if (user == null)
       return Scaffold(
         appBar: AppBar(title: const Text("收藏清單")),
         body: const Center(child: Text("請先登入")),
       );
-    }
-
     final favoritesRef = FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -978,7 +907,6 @@ class FavoritesPage extends StatelessWidget {
       ),
       body: Column(
         children: [
-          // 1. 頂部篩選器 (與主畫面風格一致)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             color: Colors.white,
@@ -991,39 +919,39 @@ class FavoritesPage extends StatelessWidget {
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
-                  value: categoryOptions.containsKey(_selectedFilter) ? _selectedFilter : 'all',
+                  value: categoryOptions.containsKey(_selectedFilter)
+                      ? _selectedFilter
+                      : 'all',
                   isExpanded: true,
                   icon: const Icon(Icons.filter_list, color: Colors.grey),
-                  items: categoryOptions.entries.map((entry) {
-                    return DropdownMenuItem<String>(
-                      value: entry.key,
-                      child: Text(entry.value),
-                    );
-                  }).toList(),
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() {
-                        _selectedFilter = val;
-                        });
-                    }
-                  },
+                  items: categoryOptions.entries
+                      .map(
+                        (entry) => DropdownMenuItem<String>(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (val) => val != null
+                      ? setState(() => _selectedFilter = val)
+                      : null,
                 ),
               ),
             ),
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: favoritesRef.orderBy('createdAt', descending: true).snapshots(),
+              stream: favoritesRef
+                  .orderBy('createdAt', descending: true)
+                  .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) return const Center(child: Text("讀取錯誤"));
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (snapshot.connectionState == ConnectionState.waiting)
                   return const Center(child: CircularProgressIndicator());
-                }
-
                 final allDocs = snapshot.data!.docs;
-                if (allDocs.isEmpty) return const Center(child: Text("還沒有收藏任何餐廳喔"));
+                if (allDocs.isEmpty)
+                  return const Center(child: Text("還沒有收藏任何餐廳喔"));
 
-                // ★ 在 Client 端進行篩選 (因為 Firestore 複合查詢比較貴且麻煩)
                 final filteredDocs = allDocs.where((doc) {
                   if (_selectedFilter == 'all') return true;
                   final data = doc.data() as Map<String, dynamic>;
@@ -1032,24 +960,23 @@ class FavoritesPage extends StatelessWidget {
                   return type == _selectedFilter;
                 }).toList();
 
-                if (filteredDocs.isEmpty) {
+                if (filteredDocs.isEmpty)
                   return Center(
                     child: Text(
                       "沒有「${categoryOptions[_selectedFilter]}」類型的收藏",
                       style: TextStyle(color: Colors.grey.shade500),
                     ),
                   );
-                }
 
                 return ListView.separated(
                   padding: const EdgeInsets.all(16),
                   itemCount: filteredDocs.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
-                    final data = filteredDocs[index].data() as Map<String, dynamic>;
+                    final data =
+                        filteredDocs[index].data() as Map<String, dynamic>;
                     final res = data['restaurantData'] ?? {};
-                    final imageUrl = _getDisplayImageUrl(res['photo_url']); // 注意：這裡要確認 _getDisplayImageUrl 是全域函式
-
+                    final imageUrl = _getDisplayImageUrl(res['photo_url']);
                     return Dismissible(
                       key: Key(filteredDocs[index].id),
                       direction: DismissDirection.endToStart,
@@ -1062,7 +989,8 @@ class FavoritesPage extends StatelessWidget {
                         ),
                         child: const Icon(Icons.delete, color: Colors.red),
                       ),
-                      onDismissed: (_) => favoritesRef.doc(filteredDocs[index].id).delete(),
+                      onDismissed: (_) =>
+                          favoritesRef.doc(filteredDocs[index].id).delete(),
                       child: ListTile(
                         contentPadding: const EdgeInsets.all(10),
                         tileColor: Colors.white,
@@ -1077,7 +1005,10 @@ class FavoritesPage extends StatelessWidget {
                             color: Colors.grey.shade100,
                             child: imageUrl.isNotEmpty
                                 ? Image.network(imageUrl, fit: BoxFit.cover)
-                                : const Icon(Icons.restaurant, color: Colors.grey),
+                                : const Icon(
+                                    Icons.restaurant,
+                                    color: Colors.grey,
+                                  ),
                           ),
                         ),
                         title: Text(
@@ -1086,87 +1017,23 @@ class FavoritesPage extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        // 這裡使用我們定義的 helper 顯示中文分類
-                        subtitle: Text("${res['rate']} ★ · ${categoryOptions[res['types']] ?? res['types']}"),
+                        subtitle: Text(
+                          "${res['rate']} ★ · ${categoryOptions[res['types']] ?? res['types']}",
+                        ),
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (_) => RestaurantDetailPage(resData: res),
                           ),
                         ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: favoritesRef.orderBy('createdAt', descending: true).snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) return const Center(child: Text("讀取錯誤"));
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final docs = snapshot.data!.docs;
-          if (docs.isEmpty) return const Center(child: Text("還沒有收藏任何餐廳喔"));
-
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final data = docs[index].data() as Map<String, dynamic>;
-              final res = data['restaurantData'] ?? {};
-              final imageUrl = _getDisplayImageUrl(res['photo_url']);
-
-              return Dismissible(
-                key: Key(docs[index].id),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade100,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.delete, color: Colors.red),
-                ),
-                onDismissed: (_) => favoritesRef.doc(docs[index].id).delete(),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(10),
-                  tileColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  leading: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      width: 60,
-                      height: 60,
-                      color: Colors.grey.shade100,
-                      child: imageUrl.isNotEmpty
-                          ? Image.network(
-                              imageUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) =>
-                                  const Icon(Icons.error),
-                            )
-                          : const Icon(Icons.restaurant, color: Colors.grey),
-                    ),
-                  ),
-                  title: Text(
-                    res['name'] ?? '',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text("${res['rate']} ★ · ${res['types']}"),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => RestaurantDetailPage(resData: res),
-                    ),
-                  ),
-                ),
-              );
-            },
-          );
-        },
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1175,6 +1042,17 @@ class FavoritesPage extends StatelessWidget {
 class RestaurantDetailPage extends StatelessWidget {
   final Map<String, dynamic> resData;
   const RestaurantDetailPage({super.key, required this.resData});
+  Future<void> _openMap() async {
+    final String address = resData['address'];
+    final String placeId = resData['id'];
+    final Uri url = Uri.parse(
+      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}&query_place_id=$placeId',
+    );
+
+    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+      debugPrint('無法打開地圖: $url');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1219,6 +1097,11 @@ class RestaurantDetailPage extends StatelessWidget {
                     "評分：${resData['rate']} ★",
                     style: const TextStyle(fontSize: 18, color: Colors.amber),
                   ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "(${resData['rating_count']})", // 顯示 (294)
+                    style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+                  ),
                   const Divider(height: 40),
                   Text(
                     "詳細資訊",
@@ -1228,6 +1111,25 @@ class RestaurantDetailPage extends StatelessWidget {
                   ListTile(
                     leading: const Icon(Icons.category),
                     title: Text(resData['types']),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.location_on,
+                      color: Colors.redAccent,
+                    ), // 用紅色地標比較顯眼
+                    title: Text(
+                      resData['address'],
+                      style: const TextStyle(
+                        decoration: TextDecoration.underline, // 加底線提示可點擊
+                        color: Colors.blue,
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.open_in_new,
+                      size: 16,
+                      color: Colors.grey,
+                    ),
+                    onTap: _openMap, // 點擊觸發開地圖
                   ),
                   ListTile(
                     leading: const Icon(Icons.map),
