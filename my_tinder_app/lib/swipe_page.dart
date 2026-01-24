@@ -7,29 +7,11 @@ import 'restaurant_detail_page.dart'; // 為了點擊卡片跳轉
 class SwipePage extends StatelessWidget {
   final List<Map<String, dynamic>> restaurants;
   final Function(Map<String, dynamic>) onSwipeRight;
-  final String currentFilter;
-  final Function(String) onFilterChanged;
 
-  SwipePage({
-    super.key,
-    required this.restaurants,
-    required this.onSwipeRight,
-    required this.currentFilter,
-    required this.onFilterChanged,
-  });
+  // ❌ 舊的 currentFilter 和 onFilterChanged 都刪掉了
+  SwipePage({super.key, required this.restaurants, required this.onSwipeRight});
 
   final CardSwiperController controller = CardSwiperController();
-
-  final Map<String, String> categoryOptions = {
-    'all': '全部餐廳',
-    'restaurant': '精選餐廳',
-    'cafe': '咖啡廳',
-    'bakery': '烘焙坊',
-    'bar': '酒吧',
-    'meal_takeaway': '外帶美食',
-    'meal_delivery': '外送美食',
-    'food': '一般美食',
-  };
 
   @override
   Widget build(BuildContext context) {
@@ -40,48 +22,7 @@ class SwipePage extends StatelessWidget {
 
     return Column(
       children: [
-        // 篩選器
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: Colors.orange.shade100),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: categoryOptions.containsKey(currentFilter)
-                  ? currentFilter
-                  : 'all',
-              isExpanded: true,
-              icon: const Icon(Icons.filter_list_rounded, color: Colors.orange),
-              items: categoryOptions.entries
-                  .map(
-                    (e) => DropdownMenuItem(
-                      value: e.key,
-                      child: Text(
-                        e.value,
-                        style: TextStyle(
-                          color: currentFilter == e.key
-                              ? Colors.orange.shade800
-                              : Colors.black87,
-                          fontWeight: currentFilter == e.key
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (val) {
-                if (val != null) onFilterChanged(val);
-              },
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 10),
+        const SizedBox(height: 20), // 留一點頂部空間
 
         Expanded(
           child: restaurants.isEmpty
@@ -172,26 +113,15 @@ class _RestaurantCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String imageUrl = getDisplayImageUrl(
-      data['photo_url'],
-    ); // 呼叫 main.dart 的函式
-    final Map<String, String> typeTrans = {
-      'restaurant': '精選餐廳',
-      'cafe': '咖啡廳',
-      'bakery': '烘焙甜點',
-      'bar': '酒吧',
-      'meal_takeaway': '外帶服務',
-      'meal_delivery': '外送服務',
-      'food': '美食',
-    };
-    List<String> types = [];
-    if (data['types'] is List) {
-      types = List<String>.from(data['types']);
+    final String imageUrl = getDisplayImageUrl(data['photo_url']);
+
+    // 處理價格顯示 (確保是 int)
+    int price = 1;
+    if (data['price_level'] is int) {
+      price = data['price_level'];
     } else {
-      types = [data['types']?.toString() ?? 'restaurant'];
+      price = int.tryParse(data['price_level']?.toString() ?? '1') ?? 1;
     }
-    String category =
-        typeTrans[types.isNotEmpty ? types[0] : 'restaurant'] ?? '餐廳';
 
     return Card(
       child: InkWell(
@@ -248,6 +178,30 @@ class _RestaurantCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // 營業中標籤
+                  if (data['open_now'] == true)
+                    Positioned(
+                      top: 15,
+                      right: 15,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Text(
+                          "營業中",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -277,33 +231,11 @@ class _RestaurantCard extends StatelessWidget {
                         Row(
                           children: [
                             Text(
-                              "\$" * (int.tryParse(data['price_level']) ?? 1),
+                              "\$" * price,
                               style: const TextStyle(
                                 color: Colors.green,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 18,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.orange.shade50,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: Colors.orange.withOpacity(0.3),
-                                ),
-                              ),
-                              child: Text(
-                                category,
-                                style: TextStyle(
-                                  color: Colors.orange.shade800,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
                               ),
                             ),
                           ],

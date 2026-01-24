@@ -9,9 +9,9 @@ class RestaurantDetailPage extends StatelessWidget {
 
   Future<void> _openMap() async {
     final String address = resData['address'];
-    final String placeId = resData['id'];
+    final String name = resData['name'];
     final Uri url = Uri.parse(
-      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}&query_place_id=$placeId',
+      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent("$name $address")}',
     );
 
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {

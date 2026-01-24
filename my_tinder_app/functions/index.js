@@ -1,140 +1,177 @@
-const { onCall } = require("firebase-functions/v2/https");
-const { getFirestore } = require("firebase-admin/firestore");
+// 引入 V2 版本的 onCall
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-if (admin.apps.length === 0) {
-  admin.initializeApp();
-}
-const db = getFirestore();
+admin.initializeApp();
 
-// API Key (請確認此 Key 在 Google Cloud Console 有開啟 Places API 權限)
-const GOOGLE_API_KEY = "AIzaSyBLBlabLgVT8jx-G-4tQ3fGzKvTELmoP1c";
+// === 設定區 ===
+const CACHE_RADIUS_KM = 0.5; // 500公尺內的快取
+const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7天過期
 
-// ★★★ 0. 定義統一白名單 (根據官方文件 Table 1 & 2) ★★★
-// 只有這 7 個字是我們承認的「餐廳相關」類型，其他的都會被過濾掉
-const UNIFIED_WHITELIST = [
-  'restaurant',
-  'cafe',
-  'bakery',
-  'bar',
-  'meal_delivery',
-  'meal_takeaway',
-  'food'
-];
+// ★★★ 請填入你那組正確的、沒有 BLabL 的 API Key ★★★
+const GOOGLE_API_KEY = "AIzaSyBLBlabLgVT8jx-G-4tQ3fGzKvTELmoP1c"; 
 
-// --- 距離計算 ---
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
-  const R = 6371e3; 
-  const p1 = lat1 * Math.PI / 180;
-  const p2 = lat2 * Math.PI / 180;
-  const dp = (lat2 - lat1) * Math.PI / 180;
-  const dl = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dp / 2) * Math.sin(dp / 2) +
-            Math.cos(p1) * Math.cos(p2) *
-            Math.sin(dl / 2) * Math.sin(dl / 2);
+// === 輔助函式：計算距離 ===
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // 地球半徑 (公里)
+  const dLat = deg2rad(lat2 - lat1);
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    // ★★★ 數學公式修正：確保距離計算準確 ★★★
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
+  return R * c;
 }
 
-// --- 圖片網址 ---
-function getPhotoUrl(photoReference) {
-  if (!photoReference) return "";
-  return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoReference}&key=${GOOGLE_API_KEY}`;
-}
+function deg2rad(deg) { return deg * (Math.PI / 180); }
 
-// --- 主要功能：抓取餐廳 ---
+// === 主程式 ===
 exports.getRestaurants = onCall(async (request) => {
-  if (!request.data || !request.data.lat || !request.data.lng) {
-    throw new admin.functions.https.HttpsError('invalid-argument', "缺少座標參數");
+  // 1. 接收手機傳來的座標 (V2 格式)
+  const data = request.data;
+  
+  if (!data) {
+      throw new HttpsError('invalid-argument', "收到空資料");
   }
 
-  const lat = Number(request.data.lat);
-  const lng = Number(request.data.lng);
+  const userLat = data.lat;
+  const userLng = data.lng;
 
-  // 1. 抓取餐廳
-  const restaurantUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=1500&type=restaurant&key=${GOOGLE_API_KEY}&language=zh-TW`;
-  
-  // 2. 抓取捷運站
-  const transitUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&rankby=distance&type=subway_station&key=${GOOGLE_API_KEY}&language=zh-TW`;
+  console.log(`📡 [V2] 收到請求: Lat ${userLat}, Lng ${userLng}`);
+
+  if (!userLat || !userLng) {
+    throw new HttpsError('invalid-argument', `缺少座標。Lat: ${userLat}, Lng: ${userLng}`);
+  }
+
+  const db = admin.firestore();
+  const cacheRef = db.collection('places_cache');
 
   try {
+    // --------------------------------------------------
+    // 步驟 1：先檢查資料庫有沒有快取 (省錢策略)
+    // --------------------------------------------------
+    const latMin = userLat - 0.01;
+    const latMax = userLat + 0.01;
+    
+    const snapshot = await cacheRef
+      .where('lat', '>=', latMin)
+      .where('lat', '<=', latMax)
+      .get();
+
+    let validCache = null;
+
+    snapshot.forEach(doc => {
+      const cacheData = doc.data();
+      const now = Date.now();
+      
+      // 檢查是否過期
+      if (now - cacheData.timestamp.toMillis() < CACHE_DURATION_MS) {
+        const dist = getDistanceFromLatLonInKm(userLat, userLng, cacheData.lat, cacheData.lng);
+        // 檢查距離是否夠近
+        if (dist <= CACHE_RADIUS_KM) {
+           if (cacheData.results && cacheData.results.length >= 10) {
+             validCache = cacheData.results;
+           }
+        }
+      }
+    });
+
+    if (validCache) {
+      console.log(`✅ 命中快取！回傳 ${validCache.length} 筆資料`);
+      return validCache; // 如果有快取，直接回傳，不扣 API 次數
+    }
+
+    // --------------------------------------------------
+    // 步驟 2：沒快取，向 Google 查詢餐廳與捷運站
+    // --------------------------------------------------
+    console.log("🚀 快取未命中，呼叫 Google API...");
+    
+    const resUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${userLat},${userLng}&radius=1500&type=restaurant&language=zh-TW&key=${GOOGLE_API_KEY}`;
+    const transitUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${userLat},${userLng}&radius=2000&type=subway_station&language=zh-TW&key=${GOOGLE_API_KEY}`;
+
+    // 同時發送請求，加快速度
     const [resResponse, transitResponse] = await Promise.all([
-      axios.get(restaurantUrl),
-      axios.get(transitUrl)
+       axios.get(resUrl),
+       axios.get(transitUrl)
     ]);
 
-    const rawResults = resResponse.data.results || [];
-    const transitResults = transitResponse.data.results || [];
-    const bestTransit = transitResults.length > 0 ? transitResults[0] : null;
+    const allRawRestaurants = resResponse.data.results || [];
+    const nearbyStations = transitResponse.data.results || [];
 
-    // ★★★ 白名單過濾邏輯 ★★★
-    const processedResults = rawResults.map(place => {
-      // (選擇性) 排除暫時關閉或永久停業的地點
-      if (place.business_status !== 'OPERATIONAL') return null;
+    // --------------------------------------------------
+    // 步驟 3：整理資料 (計算捷運距離)
+    // --------------------------------------------------
+    // 這一大段就是你要的「先整理好資料」
+    const finalResults = allRawRestaurants.map(place => {
+       const photoUrl = (place.photos && place.photos.length > 0) 
+        ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${place.photos[0].photo_reference}&key=${GOOGLE_API_KEY}`
+        : "";
 
-      const placeLat = place.geometry?.location?.lat;
-      const placeLng = place.geometry?.location?.lng;
-      const rawTypes = place.types || [];
+       // ★ 找出這間餐廳離哪個捷運站最近 ★
+       let bestStation = { name: "無鄰近捷運", distance: -1 };
+       let minStationDist = 999999;
+       
+       if (nearbyStations.length > 0) {
+          const pLat = place.geometry.location.lat;
+          const pLng = place.geometry.location.lng;
+          nearbyStations.forEach(station => {
+             // 算出餐廳與捷運站的距離
+             const sDist = Math.round(getDistanceFromLatLonInKm(pLat, pLng, station.geometry.location.lat, station.geometry.location.lng) * 1000);
+             if (sDist < minStationDist) {
+                minStationDist = sDist;
+                bestStation = { name: station.name, distance: sDist };
+             }
+          });
+       }
+       
+       // 算出餐廳與使用者的距離
+       const userDist = Math.round(getDistanceFromLatLonInKm(userLat, userLng, place.geometry.location.lat, place.geometry.location.lng) * 1000);
 
-      // 過濾邏輯：只留下白名單內的字
-      // 例如：place 有 ['restaurant', 'point_of_interest'] -> 留下來 ['restaurant']
-      const validTypes = rawTypes.filter(t => UNIFIED_WHITELIST.includes(t));
-
-      // 檢查：如果過濾完是空的 (代表這家店完全不在我們的餐飲白名單內)，直接丟棄
-      // 例如：牙醫診所只會有 ['dentist', 'health']，過濾完會變成 []，這裡就會 return null
-      if (validTypes.length === 0) return null;
-
-      // 計算距離
-      let dist = calculateDistance(lat, lng, placeLat, placeLng);
-
-      // 計算捷運距離
-      let stationInfo = { name: "無鄰近捷運", distance: -1 };
-      if (placeLat && placeLng && bestTransit) {
-        const sDist = calculateDistance(
-          placeLat, placeLng, 
-          bestTransit.geometry.location.lat, 
-          bestTransit.geometry.location.lng
-        );
-        stationInfo = { name: bestTransit.name, distance: sDist };
-      }
-
-      // 圖片處理
-      const photoRef = (place.photos && place.photos.length > 0) ? place.photos[0].photo_reference : "";
-      
-      return {
+       // 回傳整理好的物件
+       return {
         place_id: place.place_id,
         name: place.name,
         address: place.vicinity || place.formatted_address || "地址不詳",
-        rating: place.rating || 0,
+        lat: place.geometry.location.lat,
+        lng: place.geometry.location.lng,
+        rating: place.rating || 0.0,
         rating_count: place.user_ratings_total || 0,
-        types: validTypes, // ★ 這裡現在回傳的是乾淨的陣列，給前端自己判斷
-        price_level: place.price_level || 0,
-        distance: dist,
-        station_info: stationInfo,
-        photo_url: getPhotoUrl(photoRef), 
-      };
-    })
-    .filter(item => item !== null); // ★ 移除所有 null (不合格) 的資料
+        price_level: place.price_level || 1,
+        photo_url: photoUrl,
+        open_now: place.opening_hours ? place.opening_hours.open_now : false,
+        types: place.types || [],
+        distance: userDist,
+        station_info: bestStation // ★ 這裡包含了捷運站距離，等一下會一起存
+       };
+    });
 
-    return processedResults;
+    // --------------------------------------------------
+    // 步驟 4：存入資料庫 (這步會很快，必須 await 以免資料遺失)
+    // --------------------------------------------------
+    if (finalResults.length > 0) {
+      await cacheRef.add({
+        lat: userLat,
+        lng: userLng,
+        timestamp: admin.firestore.Timestamp.now(),
+        results: finalResults // 這份資料裡已經包含 station_info 了
+      });
+      console.log(`💾 寫入快取完成: ${finalResults.length} 筆`);
+    }
+
+    // --------------------------------------------------
+    // 步驟 5：回傳資料給手機
+    // --------------------------------------------------
+    return finalResults;
 
   } catch (error) {
-    console.error("API Error:", error);
-    throw new admin.functions.https.HttpsError('internal', '無法取得資料', error.message);
+    // 安全的錯誤處理，避免後端崩潰
+    if (error.response) {
+        console.error("🔥 Google API 拒絕連線:", JSON.stringify(error.response.data));
+    } else {
+        console.error("🔥 系統錯誤:", error.message);
+    }
+    throw new HttpsError('internal', `後端錯誤: ${error.message}`);
   }
-});
-
-// --- 新增收藏 ---
-exports.addFavorite = onCall(async (request) => {
-  if (!request.auth) throw new admin.functions.https.HttpsError('unauthenticated', '請先登入');
-  
-  const uid = request.auth.uid;
-  const restaurantData = request.data.restaurantData;
-
-  return db.collection("users").doc(uid).collection("favorites").add({
-    restaurantData: restaurantData,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
 });

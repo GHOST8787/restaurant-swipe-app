@@ -12,17 +12,9 @@ class FavoritesPage extends StatefulWidget {
 }
 
 class _FavoritesPageState extends State<FavoritesPage> {
-  String _selectedFilter = 'all';
-  final Map<String, String> categoryOptions = {
-    'all': '全部餐廳',
-    'restaurant': '精選餐廳',
-    'cafe': '咖啡廳',
-    'bakery': '烘焙坊',
-    'bar': '酒吧',
-    'meal_takeaway': '外帶美食',
-    'meal_delivery': '外送美食',
-    'food': '一般美食',
-  };
+  // 1. 變數改成跟主畫面一樣的價格與營業時間篩選
+  int _filterPriceLevel = -1; // -1: 不限
+  bool _filterOpenNow = false; // false: 全部
 
   @override
   Widget build(BuildContext context) {
@@ -48,37 +40,99 @@ class _FavoritesPageState extends State<FavoritesPage> {
       ),
       body: Column(
         children: [
-          // 頂部篩選
+          // 2. 移植主畫面的篩選介面
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: Colors.white,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: categoryOptions.containsKey(_selectedFilter)
-                      ? _selectedFilter
-                      : 'all',
-                  isExpanded: true,
-                  icon: const Icon(Icons.filter_list, color: Colors.grey),
-                  items: categoryOptions.entries
-                      .map(
-                        (e) => DropdownMenuItem(
-                          value: e.key,
-                          child: Text(e.value),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 左邊：價格下拉選單
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white, // 背景白
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int>(
+                      value: _filterPriceLevel,
+                      icon: const Icon(
+                        Icons.arrow_drop_down_rounded,
+                        color: Colors.deepOrange,
+                      ),
+                      // ★★★ 修正 1：強制設定選單文字樣式為黑色 ★★★
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                      dropdownColor: Colors.white,
+                      items: const [
+                        DropdownMenuItem(value: -1, child: Text("💰 價格不限")),
+                        DropdownMenuItem(value: 1, child: Text("💰 便宜 (\$ )")),
+                        DropdownMenuItem(
+                          value: 2,
+                          child: Text("💰 適中 (\$\$ )"),
                         ),
-                      )
-                      .toList(),
-                  onChanged: (val) => val != null
-                      ? setState(() => _selectedFilter = val)
-                      : null,
+                        DropdownMenuItem(
+                          value: 3,
+                          child: Text("💰 稍貴 (\$\$\$ )"),
+                        ),
+                        DropdownMenuItem(
+                          value: 4,
+                          child: Text("💰 高級 (\$\$\$\$)"),
+                        ),
+                      ],
+                      onChanged: (val) {
+                        if (val != null)
+                          setState(() => _filterPriceLevel = val);
+                      },
+                    ),
+                  ),
                 ),
-              ),
+
+                // 右邊：營業中按鈕
+                InkWell(
+                  onTap: () => setState(() => _filterOpenNow = !_filterOpenNow),
+                  borderRadius: BorderRadius.circular(30),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _filterOpenNow
+                          ? Colors.orange
+                          : Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.access_time_filled_rounded,
+                          size: 18,
+                          color: _filterOpenNow
+                              ? Colors.white
+                              : Colors.grey.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _filterOpenNow ? "營業中" : "非營業時間",
+                          style: TextStyle(
+                            color: _filterOpenNow
+                                ? Colors.white
+                                : Colors.grey.shade600,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
 
@@ -96,16 +150,29 @@ class _FavoritesPageState extends State<FavoritesPage> {
                 if (allDocs.isEmpty)
                   return const Center(child: Text("還沒有收藏任何餐廳喔"));
 
+                // 3. 修改篩選邏輯：依據價格與營業狀態
                 final filteredDocs = allDocs.where((doc) {
-                  if (_selectedFilter == 'all') return true;
                   final data = doc.data() as Map<String, dynamic>;
                   final res = data['restaurantData'] ?? {};
-                  final type = res['types']?.toString() ?? 'restaurant';
-                  return type == _selectedFilter;
+
+                  // 處理價格 (轉為 int)
+                  int price = 0;
+                  if (res['price_level'] != null) {
+                    price = int.tryParse(res['price_level'].toString()) ?? 0;
+                  }
+
+                  // 處理營業狀態 (注意：這是收藏當下的狀態)
+                  bool isOpen = res['open_now'] == true;
+
+                  bool priceMatch =
+                      _filterPriceLevel == -1 || price == _filterPriceLevel;
+                  bool openMatch = !_filterOpenNow || isOpen;
+
+                  return priceMatch && openMatch;
                 }).toList();
 
                 if (filteredDocs.isEmpty)
-                  return Center(child: Text("沒有此類型的收藏"));
+                  return const Center(child: Text("沒有符合條件的收藏"));
 
                 return ListView.separated(
                   padding: const EdgeInsets.all(16),
@@ -115,9 +182,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                     final data =
                         filteredDocs[index].data() as Map<String, dynamic>;
                     final res = data['restaurantData'] ?? {};
-                    final imageUrl = getDisplayImageUrl(
-                      res['photo_url'],
-                    ); // 呼叫 main.dart 的函式
+                    final imageUrl = getDisplayImageUrl(res['photo_url']);
 
                     return Dismissible(
                       key: Key(filteredDocs[index].id),
@@ -159,8 +224,12 @@ class _FavoritesPageState extends State<FavoritesPage> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
+                        // 4. 副標題改成顯示地址
                         subtitle: Text(
-                          "${res['rate']} ★ · ${categoryOptions[res['types']] ?? res['types']}",
+                          "${res['rate']} ★ · ${res['address'] ?? '未知地址'}",
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.grey.shade600),
                         ),
                         onTap: () => Navigator.push(
                           context,
