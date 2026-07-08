@@ -1,3 +1,5 @@
+**繁體中文** | [English](./README.en.md)
+
 # Restaurant Swipe App — 美食刷刷卡
 
 > 📅 專案開始：2026-01
